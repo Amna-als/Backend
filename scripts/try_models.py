@@ -1,14 +1,4 @@
-"""Try a list of candidate OpenAI models with the local burger.jpg image until one succeeds.
 
-This script will:
-- Load OPENAI_API_KEY from backend-/.env
-- Read burger.jpg from workspace root (one level above backend-)
-- For each candidate model, call the chat completions API with a small prompt and the image as a data URI
-- Stop on first success and update backend-/.env OPENAI_VISION_MODEL to that model
-- Print results for each tried model
-
-WARNING: these are real API calls and may incur charges.
-"""
 from dotenv import load_dotenv
 import os
 import openai
@@ -97,3 +87,4 @@ for model in CANDIDATES:
         print('ERROR for model', model, ':', err_str)
 else:
     print('\nNo candidate model succeeded. Check API key, account permissions, or try other model names.')
+
