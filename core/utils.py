@@ -1,14 +1,11 @@
 """Utility helpers for the core app.
 
-This module contains a small, local carb-estimation fallback used when the
+This module contains carb-estimation fallback used when the
 AI/remote service does not provide per-component carbohydrate estimates.
-It is intentionally small and should be replaced or extended with a more
-comprehensive nutrition database in production.
 """
 
 # Simple lookup table mapping common ingredient keywords to an approximate
-# carbs-per-serving value (grams). Keys are lowercased tokens that are
-# matched with substring containment against component names.
+# carbs-per-serving value (grams). 
 COMMON_CARB_LOOKUP = {
     'burger bun': 30.0,
     'bun': 30.0,
@@ -81,3 +78,4 @@ def estimate_components_carbs(components):
 
     total_rounded = round(total, 1) if have_number else None
     return normalized, total_rounded
+
