@@ -1,9 +1,8 @@
 """Deterministic insulin calculation helpers.
 
-This module implements a safe, well-documented function to compute
+This module implements function to compute
 insulin recommendations given carbohydrate grams and optional
-correction parameters. It is intentionally standalone and free of
-framework dependencies so it can be unit-tested easily.
+correction parameters. 
 
 Function contract (calculate_insulin):
 - inputs: total_carbs_g (float), carb_ratio (g per 1 unit), current_glucose (mg/dL, optional),
@@ -72,7 +71,7 @@ def calculate_insulin(
     except Exception:
         iob = 0.0
 
-    # Carb insulin: guard division by zero
+    
     if carb_ratio > 0:
         carb_insulin = carbs / carb_ratio
     else:
@@ -92,7 +91,7 @@ def calculate_insulin(
     if current_glucose is not None and correction_factor and correction_factor > 0:
         try:
             current = float(current_glucose)
-            # If the current glucose is below the lower bound (if provided),
+            # If the current glucose is below the lower bound,
             # do not recommend correction insulin to avoid hypoglycemia.
             if target_range and current < float(target_range[0]):
                 correction_insulin = 0.0
@@ -133,3 +132,4 @@ def calculate_insulin(
         'rounded_dose': round(rounded, 4),
         'safety_flags': safety_flags,
     }
+
