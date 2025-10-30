@@ -44,7 +44,6 @@ def csrf_token_view(request):
 def csrf_html_view(request):
     return render(request, 'csrf.html')
 try:
-    # lightweight validation; pydantic may already be in requirements
     from pydantic import BaseModel, ValidationError
 except Exception:
     BaseModel = None
@@ -54,9 +53,6 @@ logger = logging.getLogger(__name__)
 
 
 class FoodEntryViewSet(viewsets.ModelViewSet):
-    # Scope FoodEntry queries to the requesting user and require
-    # authentication for all operations.
-    # Provide a default queryset so DRF routers can auto-determine the basename
     queryset = FoodEntry.objects.none()
     serializer_class = FoodEntrySerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -72,11 +68,7 @@ class FoodEntryViewSet(viewsets.ModelViewSet):
         instance = serializer.save(user=self.request.user)
         print("perform_create triggered")
 
-        # Try to determine total carbs from the saved nutritional_info or
-        # from the incoming request payload (clients may include
-        # `total_carbs_g` when creating a food entry). If we can compute
-        # carbs and the user has a carb ratio, compute and persist the
-        # insulin recommendation for display/audit.
+    
         total_carbs = None
         if instance.nutritional_info and instance.nutritional_info.carbs:
             try:
@@ -84,7 +76,6 @@ class FoodEntryViewSet(viewsets.ModelViewSet):
             except Exception:
                 total_carbs = None
         if total_carbs is None:
-            # Accept a few possible keys from clients
             total_carbs = self.request.data.get('total_carbs_g') or self.request.data.get('total_carbs')
             try:
                 total_carbs = float(total_carbs) if total_carbs is not None else None
@@ -92,11 +83,9 @@ class FoodEntryViewSet(viewsets.ModelViewSet):
                 total_carbs = None
 
         if total_carbs is not None:
-            # Pull user-specific ratios; fall back to zero which yields 0 carb insulin
             carb_ratio = getattr(self.request.user, 'insulin_to_carb_ratio', None) or 0
             correction_factor = getattr(self.request.user, 'correction_factor', None)
 
-            # Try to find the latest glucose record for a correction calculation
             current_glucose = None
             try:
                 latest = self.request.user.glucose_records.order_by('-timestamp').first()
@@ -117,7 +106,6 @@ class FoodEntryViewSet(viewsets.ModelViewSet):
 
 
 class GlucoseRecordViewSet(viewsets.ModelViewSet):
-    # Provide a default queryset so DRF routers can auto-determine the basename
     queryset = GlucoseRecord.objects.all()
     serializer_class = GlucoseRecordSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -176,12 +164,10 @@ class LibreConnectView(APIView):
     encryption or a token-based flow.
     """
     permission_classes = [permissions.IsAuthenticated]
-
+    # test; static mode
     def post(self, request):
         user = request.user
         body = request.data
-        # In static mode, ignore posted email/password/account_id and use
-        # the server-wide static Libre credentials instead.
         if getattr(settings, 'LIBRE_STATIC_ENABLED', False):
             email = getattr(settings, 'LIBRE_STATIC_EMAIL', None)
             password = getattr(settings, 'LIBRE_STATIC_PASSWORD', None)
@@ -190,7 +176,7 @@ class LibreConnectView(APIView):
             email = body.get('email')
             password = body.get('password')
             account_id = body.get('account_id')
-        # Support server-side OAuth exchange: clients can POST {"code": "...", "redirect_uri": "..."}
+        
         code = body.get('code')
         redirect_uri = body.get('redirect_uri')
 
@@ -205,7 +191,7 @@ class LibreConnectView(APIView):
         if account_id:
             lc.account_id = account_id
 
-        # If an OAuth authorization code is provided, exchange it for tokens
+       
         if code and redirect_uri:
             try:
                 token_data = exchange_code_for_token(code, redirect_uri)
@@ -226,8 +212,7 @@ class LibrePasswordLoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        # In static mode the server uses the configured static Libre account.
-        # Otherwise accept email/password from the requesting client.
+        
         #
         if not request.user or not request.user.is_authenticated:
             return Response({'error': 'unauthenticated'}, status= 401)
@@ -242,16 +227,16 @@ class LibrePasswordLoginView(APIView):
         # Save connection data
         user = request.user
         lc = LibreConnection.objects.create(user=user)
-        # store raw account id (not hashed) for lookup
+        # store raw account id 
         lc.account_id = token_response.get('account_id')
         
-        # save the password encrypted for dev (use vault in production)
+        # save the password encrypted for dev 
         try:
             lc.set_password_encrypted(password)
         except Exception:
             pass
 
-        # store token info (we only have access token from this flow)
+        # store token info 
         lc.token = token_response.get('access_token')
         lc.connected = bool(lc.token)
         lc.api_endpoint = base_url
@@ -262,7 +247,7 @@ class LibrePasswordLoginView(APIView):
         lc.save()
        
 
-        # Optionally fetch connections list for immediate verification
+       
         try:
             resp = requests.get(f"{base_url}/llu/connections", headers=headers, timeout=10)
             connections = resp.json()
@@ -295,8 +280,7 @@ class LibreWebhookView(APIView):
             return Response({'error': 'unauthorized'}, status=status.HTTP_403_FORBIDDEN)
         payload = request.data
 
-        # Minimal schema validation using pydantic if available. Keep it small
-        # to avoid over-engineering: validate top-level keys and each record
+       
         if BaseModel is not None:
             class WebhookRecordModel(BaseModel):
                 timestamp: str
@@ -314,7 +298,6 @@ class LibreWebhookView(APIView):
                 # Return 400 but keep message minimal to avoid leaking schema
                 return Response({'error': 'invalid_payload'}, status=status.HTTP_400_BAD_REQUEST)
         else:
-            # pydantic not present: best-effort extraction
             validated = None
         # Identify user by account_id/email in the webhook payload
         if validated is not None:
@@ -333,12 +316,7 @@ class LibreWebhookView(APIView):
         else:
             user = None
 
-        # Create GlucoseRecord rows for any records in the payload for the
-        # resolved user. To keep the webhook idempotent for demos we do a
-        # simple dedupe check: if a record with the same timestamp, value
-        # and source already exists we skip it. This avoids creating duplicates
-        # when clients retry deliveries. Keep it minimal and DB-backed
-        # (no extra models/migrations required).
+       
         for r in records:
             if not user:
                 continue    
@@ -352,7 +330,7 @@ class LibreWebhookView(APIView):
 
             if not ts or glucose_level is None:
                 logger.warning(f"skipping malformed record: {r}")
-                # skip malformed items but don't fail the whole webhook
+
                 continue
 
             try:
@@ -366,7 +344,6 @@ class LibreWebhookView(APIView):
                 )
                 created += 1
             except Exception:
-                # swallow individual failures to keep webhook resilient
                 continue
 
         # Respond 201 if we created new records, 200 otherwise (idempotent)
@@ -480,7 +457,7 @@ class LibreSyncNowView(APIView):
             token = token_response.get("access_token")
             account_id = token_response.get("account_id")
 
-            # Optional: persist for next time
+            
             LibreConnection.objects.update_or_create(
                 user=user,
                 defaults={
@@ -531,7 +508,7 @@ class LibreSyncNowView(APIView):
 
             fetched += 1
 
-            # Parse timestamp (expects ISO 8601)
+            # Parse timestamp 
             ts = parse_datetime(ts_str)
             if ts is None:
                 # If Libre sends naive string like "2025-10-30T12:00:00", make it UTC
@@ -653,3 +630,4 @@ class OpenAIAnalyzeImageView(APIView):
             user_hash = hashlib.sha256(str(getattr(user, 'id', None)).encode('utf-8')).hexdigest()[:16]
             logger.exception('ai_request unexpected user=%s request_id=%s', user_hash, request_id)
             return Response({'error': 'internal_error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
