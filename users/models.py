@@ -43,10 +43,11 @@ class User(AbstractUser):
     target_glucose_max = models.IntegerField(blank=True, null=True)
     preferred_carb_ratio = models.FloatField(blank=True, null=True)
 
-    # Freestyle Libre integration credentials (only store with care; consider encrypting)
+    # Freestyle Libre integration credentials 
     libre_registered = models.BooleanField(default=True)
     libre_username = models.CharField(max_length=200, blank=True, null=True)
     libre_password = models.CharField(max_length=200, blank=True, null=True)
 
     def __str__(self):
         return self.username
+
