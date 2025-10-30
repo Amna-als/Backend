@@ -33,9 +33,6 @@ class GlucoseRecordAdmin(admin.ModelAdmin):
 
 @admin.register(LibreConnection)
 class LibreConnectionAdmin(admin.ModelAdmin):
-    # We intentionally do not display passwords in the admin; show only
-    # the email and connection status. Passwords should be handled via
-    # secure workflows and not revealed in the admin UI.
     list_display = ('user', 'email', 'connected')
     raw_id_fields = ('user',)
 
@@ -73,3 +70,4 @@ class RecommendationAdmin(admin.ModelAdmin):
 @admin.register(Images)
 class ImagesAdmin(admin.ModelAdmin):
     list_display = ('id', 'title')
+
