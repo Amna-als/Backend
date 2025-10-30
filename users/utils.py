@@ -2,11 +2,7 @@ from django.core import signing
 from django.conf import settings
 
 # Utility helpers used to avoid storing Libre passwords as plain text in the DB.
-#
-# NOTE: django.core.signing provides integrity protection and ties the value to
-# the Django SECRET_KEY. This is a convenience for development. For production
-# deployments prefer field-level encryption (e.g. using a key in a secrets
-# manager) or secure token-based OAuth flows where possible.
+
 SALT = 'users.libre_password'
 
 
@@ -31,3 +27,4 @@ def decrypt_password(token: str) -> str:
         return signing.loads(token, key=settings.SECRET_KEY, salt=SALT)
     except Exception:
         return None
+
