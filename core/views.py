@@ -8,11 +8,7 @@ from django.conf import settings
 import json
 import re
 
-# core.views contains the image upload UI and the ai-powered `aiopen` view
-# used during development. The view demonstrates how an uploaded image is
-# converted to base64 and sent to the configured OpenAI model. The handler
-# parses JSON from the model response, normalizes components, and renders
-# the `core/openai.html` template with the parsed result.
+
 
 def aiopen(request):
     result_text = None
@@ -32,11 +28,8 @@ def aiopen(request):
         # Use OpenAI client
         client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
 
-        # The system instruction strongly requests JSON-only output and a
-        # precise schema. The view attempts to robustly extract a JSON object
-        # even when the model emits surrounding text; this is why later we
-        # search for the first and last braces and do json.loads on the
-        # substring.
+      
+    
         system_instruction = (
             "You are a food nutrition assistant.\n"
             "Given an image, identify the main dish and the individual components/ingredients that make up the meal. For each component, estimate the amount of carbohydrates (in grams) that component contributes.\n"
@@ -51,10 +44,7 @@ def aiopen(request):
             "Make numeric values plain numbers (not strings), round to one decimal place if needed, and use grams for carbs."
         )
 
-        # The user_message is a small wrapper describing the action and
-        # attaching the image as a data URL. Different models support
-        # different image attachments; the project probes model capabilities
-        # and stores the chosen model in settings.
+      
         user_message = [
             {"type": "text", "text": "Identify the meal and list components with estimated carbs in grams, then compute total_carbs_g as the sum."},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
@@ -76,10 +66,7 @@ def aiopen(request):
             raw_text = response['choices'][0]['message']['content']
         print("Raw model output:", raw_text)
 
-        # Robust JSON extraction: many LLM outputs include commentary. We
-        # search for the first '{' and last '}' and attempt to parse the
-        # substring as JSON. If that fails we fall back to attempting to
-        # json.loads the entire output (which may also fail).
+       
         parsed = None
         try:
             start = raw_text.find('{')
@@ -90,9 +77,7 @@ def aiopen(request):
             else:
                 parsed = json.loads(raw_text)
 
-            # Normalize components: the model may use 'components' or
-            # 'ingredients'. Normalize to a list of dicts with 'name'
-            # and numeric 'carbs_g' (rounded to 1 decimal place).
+            
             if isinstance(parsed, dict):
                 comps = parsed.get('components') or parsed.get('ingredients')
                 normalized = []
@@ -127,9 +112,6 @@ def aiopen(request):
                         parsed['total_carbs_g'] = round(s, 1)
 
         except Exception as e:
-            # If parsing fails we print the error for debugging and will
-            # render the raw model output to the template so you can inspect
-            # what the model returned.
             print("JSON parse error:", e)
             parsed = None
         result_text = parsed if parsed is not None else raw_text
@@ -160,4 +142,5 @@ def sample_ai_view(request):
         return JsonResponse({'error': str(e)}, status=500)
 
     return JsonResponse({'reply': reply})
+
 
