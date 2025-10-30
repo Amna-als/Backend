@@ -7,7 +7,6 @@ class InsulinAPITests(TestCase):
     def setUp(self):
         User = get_user_model()
         self.user = User.objects.create_user(username='tester', password='pass123')
-        # Set common diabetes fields if present on the custom user model
         if hasattr(self.user, 'insulin_to_carb_ratio'):
             self.user.insulin_to_carb_ratio = 10
         if hasattr(self.user, 'correction_factor'):
@@ -28,11 +27,10 @@ class InsulinAPITests(TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn('rounded_dose', data)
-        # Expected: carb insulin 6.0 + correction (180->100 => 80/50=1.6) => 7.6 rounded to 7.5
         self.assertAlmostEqual(data['rounded_dose'], 7.5)
 
     def test_food_entry_create_saves_insulin(self):
-        # Create a food entry via API and include total_carbs_g in payload
+      
         payload = {
             'food_name': 'Test Meal',
             'meal_type': 'lunch',
@@ -41,13 +39,13 @@ class InsulinAPITests(TestCase):
         resp = self.client.post('/api/food-entries/', payload, format='json')
         self.assertIn(resp.status_code, (200, 201), msg=str(getattr(resp, 'json', lambda: resp.content)()))
         data = resp.json()
-        # The serializer exposes insulin_rounded as read-only field
+        
         self.assertIn('insulin_rounded', data)
-        # For 50g carbs and default ratio 10 -> 5.0 units
+       
         self.assertAlmostEqual(float(data.get('insulin_rounded') or 0), 5.0)
 
 
-# Additional tests for the OpenAI service and API endpoint
+
 from unittest.mock import MagicMock, patch
 import openai
 from django.test import SimpleTestCase
@@ -60,7 +58,7 @@ class OpenAIServiceUnitTests(SimpleTestCase):
         return b"\xFF\xD8\xFF\xE0" + b"0" * 100
 
     def test_service_happy_path(self):
-        # Mock OpenAI client response with valid JSON
+       
         class FakeChoice:
             def __init__(self, content):
                 self.message = type('M', (), {'content': content})
@@ -114,3 +112,4 @@ class OpenAIApiEndpointTests(TestCase):
             f = self._make_file(b'jpeg')
             resp = self.client.post(self.url, {'image': f}, format='multipart')
             self.assertEqual(resp.status_code, 200)
+
