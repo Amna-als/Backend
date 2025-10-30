@@ -6,7 +6,7 @@ This module provides two small helpers:
 - exchange_code_for_token(code, redirect_uri): exchanges an authorization
   code for tokens using the configured token endpoint.
 
-Configure the following settings in `config/settings.py` or your environment:
+
 - LIBRE_OAUTH_AUTHORIZE_URL
 - LIBRE_OAUTH_TOKEN_URL
 - LIBRE_OAUTH_CLIENT_ID
@@ -183,5 +183,6 @@ def login_with_password(email: str, password: str, timeout: int = _DEFAULT_TIMEO
     }
 
     return base_url, token_response, auth_headers
+
 
 
