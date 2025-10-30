@@ -50,7 +50,7 @@ def _hash_user_id(user_id: Optional[int]) -> str:
 
 
 def _strip_exif(image_bytes: bytes) -> bytes:
-    # Remove EXIF (including GPS) by re-saving the image without info
+    # Remove EXIF by re-saving the image without info
     try:
         img = Image.open(BytesIO(image_bytes))
         # Convert to RGB to avoid problems with palettes
@@ -60,16 +60,13 @@ def _strip_exif(image_bytes: bytes) -> bytes:
         img.save(out, format='JPEG', quality=85)
         return out.getvalue()
     except Exception:
-        # If pillow fails, just return original bytes; caller should still
-        # enforce that images are only jpeg/png.
+        # If pillow fails, just return original bytes
         return image_bytes
 
 #make entrypoint
 def analyze_image(image_bytes: bytes, user_id: Optional[int] = None, request_id: Optional[str] = None) -> dict:
     """Call OpenAI to analyze an image and return validated JSON matching OpenAIImageResponse.
 
-    Implements timeout and simple retry logic for 429/5xx and maps errors to
-    consistent exceptions.
     """
     start = time.time()
     hashed_user = _hash_user_id(user_id)
@@ -121,8 +118,7 @@ def analyze_image(image_bytes: bytes, user_id: Optional[int] = None, request_id:
     while attempt <= max_retries:
         attempt += 1
         try:
-            # send as a small multipart-like payload; the SDK may accept an image data URL
-            # We intentionally do not log the image bytes or API key.
+            # send as a small multipart-like payload
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
@@ -176,4 +172,5 @@ def analyze_image(image_bytes: bytes, user_id: Optional[int] = None, request_id:
             
             
         
+
   
