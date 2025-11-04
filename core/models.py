@@ -1,14 +1,40 @@
 from django.db import models
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from django.utils.dateparse import parse_datetime
 from django.conf import settings
 import uuid
+import hashlib
+import requests
 from datetime import timedelta
 from django.utils import timezone
-
+from django.core.files.base import ContentFile
+from .openai_service import analyze_image
+from .insulin import calculate_insulin
+from .libre import login_with_password, get_libreview_connections
 
 # Core domain models following the provided class diagram
 #
 # Each model below maps to a box on the UML diagram 
-#
+# Classes are intentionally lightweight: fields model data and helper methods are
+# small placeholders that can later be implemented to call external services
+# (e.g., image analysis, Libre auth) or to perform domain logic.
+
+DEFAULT_LOW_GLUC = 69
+DEFAULT_HIGH_GLUC = 200
+
+def _user_glucose_thresholds(user):
+    try:
+        low = getattr(user, 'target_glucose_min', None)
+        high = getattr(user, 'target_glucose_max', None)
+        low = float(low) if low is not None else DEFAULT_LOW_GLUC
+        high = float(high) if high is not None else DEFAULT_HIGH_GLUC
+        if low >= high:
+            low,high = DEFAULT_LOW_GLUC, DEFAULT_HIGH_GLUC
+        return low, high
+    except Exception:
+        return DEFAULT_LOW_GLUC, DEFAULT_HIGH_GLUC
+
 
 
 class NutritionalInfo(models.Model):
@@ -45,14 +71,100 @@ class FoodEntry(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
     meal_type = models.CharField(max_length=16, choices=MEAL_TYPES, default="lunch")
     nutritional_info = models.OneToOneField(NutritionalInfo, on_delete=models.SET_NULL, null=True, blank=True)
-  
+    # Recommended insulin values (calculated deterministically). These are
+    # stored for UI/display and audit; they do NOT trigger any insulin
+    # delivery. Values are optional and set when the backend computes a
+    # recommendation for a FoodEntry.
     insulin_recommended = models.FloatField(blank=True, null=True)
     insulin_rounded = models.FloatField(blank=True, null=True)
 
-   
+    # analyze_food: placeholder hook where you can call the vision + nutrition
+    # pipeline (OpenAI or other) to produce a NutritionalInfo object or dict.
+    # It intentionally does not implement the call here to keep the model layer
+    # free of network dependencies; implement in a service layer or view.
     def analyze_food(self, image_file=None):
-        """Placeholder for analysis, returns NutritionalInfo-like dict or object."""
-        return None
+        """Placeholder for analysis (e.g., call vision API); returns NutritionalInfo-like dict or object."""
+        #resolve image bytes
+        file_obj = image_file or getattr(self, "image", None)
+        if not file_obj:
+            return {"error":" no image found"}
+        try:
+            if hashsttr(file_obj, "read"):
+                image_bytes = file_obj.read()
+            else:
+                file_obj.open("rb")
+                image_bytes = file_obj.read()
+                file_obj.close()
+        except Exception:
+            return {"error":" failed to read image bytes"}
+        #call openai 
+        try:
+            result = analyze_image(
+                image_bytes = image_bytes,
+                user_id = getattr(self.user, "id", None),
+                request_id=str(self.id),
+            )
+        except Exception as e:
+            return {"error": f"analysis failed: {e}"}
+        
+        #result 
+        name = result.get("name")
+        #components + carbs
+        total_carbs = result.get("total_carbs_g ")
+
+        #update
+        ni = self.nutritional_info or NutritionalInfo()
+        ni.carbs = total_carbs
+        ni.save()
+
+        #attach to foodentry
+        changed=  False
+        if not self.nutritional_info_id or self.nutritional_info_id != ni.id:
+            self.nutritional_info = ni
+            changed = True
+        if name and (not self.food_name):
+            self.food_name = name
+            changed = True
+        
+        #insulin calc
+        try:
+            carb_ratio = getattr(self.user, "insulin_to_carb_ratio", None)
+            correction_factor = getattr(self.user, "correction_factor", None)
+            current_glucose = None
+            try:
+                latest = self.user.glucose_records.order_by('-timestamp').first()
+                if latest:
+                    current_glucose = latest.glucose_level
+            except Exception:
+                current_glucose = getattr(self.user, "current_glucose", None)
+
+            if total_carbs is not None and carb_ratio:
+                calc = calculate_insulin(
+                    total_carbs_g = float(total_carbs),
+                    carb_ratio=float(carb_ratio),
+                    current_glucose = current_glucose,
+                    correction_factor = correction_factor,
+                )
+                self.insulin_recommended = calc.get("recommended_dose")
+                self.insulin_rounded = calc.get("rounded_dose")
+                changed = True
+        except Exception:
+            pass
+
+        if changed:
+            self.save(update_fields=[
+                "nutritional_info",
+                "food_name",
+                "insulin_recommended",
+                "insulin_rounded",
+            ])   
+        return {
+            **result,
+            "nutrional_info_id": ni.id,
+            "food_entry_id": str(self.id),
+        }             
+
+
 
     def __str__(self):
         return f"FoodEntry({self.food_name or self.id})"
@@ -72,9 +184,17 @@ class GlucoseRecord(models.Model):
     trend_arrow = models.CharField(max_length=50, blank=True, null=True)
     source = models.CharField(max_length=50, choices=SOURCE_CHOICES, default="manual")  # e.g., 'cgm' or 'manual'
 
-  
-    def is_abnormal(self, low_threshold=70, high_threshold=180):
-        return not (low_threshold <= self.glucose_level <= high_threshold)
+    # Domain-level helper: quick abnormality check using thresholds.
+    # In real use you may use user-specific targets stored in the User model
+    # or Preferences and more sophisticated rolling-window checks.
+    def is_abnormal(self, low_threshold=None, high_threshold=None):
+        low, high = user_glucose_thershold(self.user)
+        if low_threshold is not None:
+            low = float(low_threshold)
+        if high_threshold is not None:
+            high = float(high_threshold)
+        return not (low <= float(self.glucose_level) <= high)
+        
 
     def __str__(self):
         return f"GlucoseRecord(user={self.user_id}, level={self.glucose_level} at {self.timestamp})"
@@ -88,7 +208,7 @@ class GlucoseRecord(models.Model):
 class LibreConnection(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='libre_connection')
     email = models.CharField(max_length=200)
-    # Store encrypted password/token to avoid plaintext storage; 
+    # Store encrypted password/token to avoid plaintext storage; use users.utils for encrypt/decrypt
     password = models.CharField(max_length=200, blank=True, null=True)
     password_encrypted = models.TextField(blank=True, null=True)
     token = models.CharField(max_length=500, blank=True, null=True)
@@ -103,10 +223,42 @@ class LibreConnection(models.Model):
     last_synced = models.DateTimeField(blank=True, null=True)
 
     # authenticate: placeholder where code would reach out to LibreView/LibreLink
-    # API to exchange email/password for tokens.
+    # API to exchange email/password for tokens. Implementations should store
+    # tokens (not raw passwords) and handle retry/refresh flows.
     def authenticate(self):
-        # placeholder for Libre authentication
-        return False
+
+        email = self.email
+        password = None
+        try:
+
+            password = self.get_password_decrypted()
+        except Exception:
+            pass
+        if not password:
+            password = self.password
+        
+        if not email or not password:
+            return False
+        base_url, token_response, auth_headers = login_with_password(email, password)
+        if not (base_url and token_response and auth_headers):
+            return False
+
+        #connection metadata
+        try:
+            self.token = token_response.get("access_token")
+            self.account_id = token_response.get("account_id")
+            self.api_endpoint = base_url,
+            #try to derive region
+            try:
+                if "api-" in base_url:
+                    self.region = base_url.split("//api-")[1].split(".")[0]
+            except Exception:
+                pass
+            self.connected = True if self.token else False
+            self.save(update_fields=["token","account_id","api_endpoint","region","connected"])
+            return True
+        except Exception:
+            return False
 
     # helpers to set/get encrypted password using users.utils
     def set_password_encrypted(self, raw_password: str):
@@ -159,7 +311,8 @@ class LibreConnection(models.Model):
         except Exception:
             pass
 
-
+    # Disconnect helper - clears connection metadata locally. The real
+    # implementation should also call the remote API if required.
     def disconnect(self):
         self.connected = False
         self.token = None
@@ -175,14 +328,88 @@ class GlucoseMonitor(models.Model):
     # store recent glucose values or metadata as JSON; glucose data itself is stored in GlucoseRecord
     meta = models.JSONField(blank=True, null=True)
 
-   
+    # Monitoring helpers. These are placeholders to express the intent that a
+    # GlucoseMonitor can orchestrate polling/streaming of CGM data via a
+    # `LibreConnection` or other provider.
     def start_live_monitoring(self):
-        # placeholder to start monitoring using connection
-        pass
+        if not self.connection:
+            return {"error":"no_connection"}
+
+        conn = self.connection
+        if not conn.token or not conn.api_endpoint or not conn.account_id:
+            ok = conn.authenticate()
+            if not ok:
+                return {"error":"missing or inavlid token"}
+        try:
+            #if helper no available build manually
+            account_hash = hashlib.sha256(conn.account_id.encode()).hexdigest()
+            headers = {
+                "authorization": f"Bearer {conn.token}",
+                "account-id":account_hash,
+                "accept":"application/json",
+            }
+            resp = request.get(f"{conn.api_endpoint}/llu/connections", headers = headers, timeout = 20)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception:
+            return {"error":f"request_failed: {e}"}
+        data = payload.get("data") or []
+        created, fetched = 0, 0
+        for item in data:
+            gm = (item or {}).get("glucoseMeasurement") or {}
+            if not gm:
+                continue
+            value = gm.get("value") or gm.get("Value")
+            ts_str = gm.get("timestamp") or gm.get("Timestamp")
+            trend = gm.get("TrendArrow") or gm.get("trend_arrow")
+            if value is None or not ts_str:
+                continue
+            fetched +=1
+            ts = parse_datetime(ts_str)
+            if ts and timezone.is_naive(ts):
+                ts = timezone.make_aware(ts, timezone=timezone.utc)
+            try:
+                _, was_created = GlucoseRecord.objects.get_or_create(
+                    user = self.user,
+                    timestamp = ts,
+                    glucose_level = value,
+                    trend_arrow = trend,
+                    source = "libre_live"
+                )         
+                if was_created:
+                    created+=1
+            except Exception:
+                continue
+        #update
+        self.mats = {
+            "last_fetch" : timezone.now().isformat(),
+            "records_fetched": fetched,
+            "records_created": created,
+        }
+        self.save(update_fields = ["meta"])
+        return {"fetched": fetched, "created":created}
 
     def fetch_latest_glucose(self):
-        # placeholder to fetch latest readings
-        return []
+       now = timezone.now()
+       since = now - timedelta(hours = 12)
+       qs = (
+        GlucoseRecord.obkects.filter(user=self.user, timestamp__gte=since)
+        .order_by("-timestamp")[:5]
+       )
+       results = [
+        {
+            "timestamp": gr.timestamp.isformat(),
+            "glucose_level":gr.glucose_level,
+            "trend_arrow":gr.trend_arrow,
+            "source": gr.source,
+        }
+        for gs in qs
+       ]
+       #cache summary
+       self.meta = {"last_checked": now.isformat(), "latest_levels":results}
+       self.save(update_fields["mata"])
+       return results
+
 
     def __str__(self):
         return f"GlucoseMonitor(user={self.user_id})"
@@ -195,7 +422,8 @@ class Preferences(models.Model):
     color_scheme = models.CharField(max_length=50, blank=True, null=True)
     language = models.CharField(max_length=20, blank=True, null=True)
 
-    # Simple setter helper for preferred unit.
+    # Simple setter helper for preferred unit. In a complete product this
+    # might trigger a conversion of stored values or a user-visible message.
     def set_preferred_unit(self, unit: str):
         self.preferred_glucose_unit = unit
         self.save()
@@ -211,10 +439,38 @@ class Alert(models.Model):
     message = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
 
-    # send: placeholder where notification logic (push, SMS, email) 
+    # send: placeholder where notification logic (push, SMS, email) would be
+    # implemented. Keep the model simple and implement delivery in a service
+    # layer so you can retry and log delivery attempts.
     def send(self):
-        # placeholder for sending notifications
-        pass
+        #we retrun true to indicate delivered
+        return True
+    @classmethod
+    def ensure_for_glucose(cls, record):
+        try:
+            low, high = _user_glucose_thresholds(record.user)
+            level = float(record.glucose_level)
+            if level < low:
+                a_type = "low_glucsoe"
+                msg = f"Low glucose {level:.0f} mg/dl"
+            elif level > high:
+                a_type = "high_glucose"
+                msg = f"High glucose {level:.0f} mg/dl"
+            else:
+                return None #in range
+            since = timezone.now() - timeselta(miinutes=15)
+            recent = (
+                cls.object.filter(user=record.user, alert_type=a_type, timestamp__gte=since)
+                .order_by("-timestamp")
+                .first()
+            )
+            if recent:
+                return None
+            alert = cls.objects.create(user = record.user, alert_type = a_type, message=msg)
+            alert.send()
+            return alert
+        except Exception:
+            return None
 
     def __str__(self):
         return f"Alert({self.alert_type}) for {self.user_id} at {self.timestamp}"
@@ -228,10 +484,114 @@ class InsightReport(models.Model):
     general_insights = models.TextField(blank=True, null=True)
 
     # generate_insights: intended to compute aggregated statistics over a
-    # user's GlucoseRecord/FoodEntry history. 
-    def generate_insights(self):
-        # placeholder for generating report
-        pass
+    # user's GlucoseRecord/FoodEntry history. Implementation belongs in a
+    # separate service or management command; the model holds the result.
+    def generate_insights(self, days: int = 14):
+        #14-day summary of average glucose, time in range, high/low counts, A1c%, time of day
+        #in spike, most frequent meal, meal impact
+        now = timezone.now()
+        since = now - timedelta(days = int(days or 14))
+        try:
+            low_thr, high_thr = _user_glucose_thresholds(self.user)
+        except Exception:
+            low_thr, high_thr = 69.0, 200.0
+        
+        #gather glucose records
+        qs = (
+            GlucoseRecord.objects.filter(user=self.user, timestamp__gte=since, timestamp__lte=now).order_by("timestamp")
+
+        )
+        total = qs.count()
+        if total == 0:
+            empty = {
+                "days": days,
+                "average_glucose_mgdl": None,
+                "time_in_range_pct": 0.0,
+                "low_events": 0,
+                "high_events": 0,
+                "gmi_percent": None,
+                "meal_impact_series":[],
+                "most_frequent_meal_type":None,
+                "time_of_day_with_spikes":None,
+                "low_threshold":low_thr,
+                "high_threshold":high_thr,
+                "updated_at":now.isformat(),
+            }
+            self.avg_glucose = None,
+            self.most_frequent_meal_type= None,
+            self.time_of_day_with_spikes= None,
+            self.general_insights = json.dumps(empty)
+            self.save(update_fields=["avg_glucose","most_frequent_meal_type", "time_of_day_with_spikes","general_insights"])
+            return empty
+
+        values = list(qs.values_list("glucose_level", flat=True))
+        avg_gluc=sum(values)/float(total)
+
+        lows= qs.filter(glucose_level__lt=low_thr).count()
+        highs = qs.filter(glucose_level__gt=high_thr).count()
+        in_range=total - (lows+highs)
+        tir_Pct=round((in_range/total)*100.0, 1)
+
+        gmi = round(3.31 +0.02392 * avg_gluc, 1)
+
+        by_day = (
+            qs.extra(select={"day":"date(timestamp)"})
+            .values("day")
+            .annotate(mean=Avg("glucose_level"))
+            .order_by("day")
+        )
+        meal_impact_series = [
+            {"day":str(rpw["day"]), "mean":round(float(row["mean"]), 1)}
+            for row in by_day
+        ]
+
+        meals_qs = (
+            FoodEntry.objects.filter(user=self.user, timestamp__gte=since, timestamp__lte=now)
+            .values("meal_type")
+            .annotate(n=Count("id"))
+            .order_by("-n")
+        )
+        most_freq_meal = meal_qs[0]["meal_type"] if meals_qs else None
+
+        highs_hours = (
+            qs.filter(glucose_level__gt=thigh_thr)
+            .extra(select={"hr": "extract(hour from timestamp)"})
+            .values_list("hr", flat=True)
+        )
+        bucket_counts = {"Night (0-5)": 0, "Morning (6-11)":0, "Afternoon (12-17)": 0, "Evening (18-23)":0}
+        for h in highs_hours:
+            h = int(h)
+            if 0 <= h <= 5:
+                bucket_counts["Night (0-5)"] += 1
+            elif 6 <= h <= 11:
+                bucket_counts["Morning (6-11)"] += 1
+            elif 12 <= h <= 17:
+                bucket_counts["Afternoon (12-17)"] += 1
+            elif 18 <= h <= 23:
+                bucket_counts["Evening (18-23)"] += 1
+        time_of_day_with_spikes = max(bucket_counts, key=bucket_counts.get) if sum(bucket_counts.values()) > 0 else None
+
+        payload = {
+            "days": days,
+            "average_glucose_mgdl": round(float(avg_gluc), 1),
+            "time_in_range_pct":tir_pct,
+            "low_events": int(lows),
+            "high_events":int(highs),
+            "gmi_percent": gmi,
+            "meal_frequent_meal_type":most_freq_meal,
+            "time_of_day_with_spikes":time_of_day_with_spikes,
+            "low_threshold":low_thr,
+            "high_threshold":high_thr,
+            "updated_at":now.isformat(),
+        }
+        self.avg_glucose = payload["average_glucpse_mgdl"]
+        self.most_frequent_meal_type= most_freq_meal
+        self.time_of_day_with_spikes=time_of_day_with_spikes
+        self.general_insights= json.dumps(payload)
+        self.save(update_fields = ["avg_glucose","most_frequent_meal_type","time_of_day_with_spikes","general_insights" ]) 
+
+        return payload           
+
 
     def __str__(self):
         return f"InsightReport(user={self.user_id})"
@@ -249,11 +609,19 @@ class Recommendation(models.Model):
         return f"Recommendation({self.id}) for {self.user_id}"
 
 
-
+# Keep small convenience Images model (used earlier in project)
 class Images(models.Model):
     title = models.CharField(max_length=200)
 
     def __str__(self):
         return self.title
 
+@receiver(post_save, sender=GlucoseRecord)
+def _glucose_record_alert(sender, instance: GlucoseRecord, created, **kwargs):
+    if not created:
+        return
+    try:
+        Alert.ensure_for_glucose(instance)
+    except Exception:
+        pass
 
