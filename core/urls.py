@@ -31,4 +31,6 @@ urlpatterns = [
     path('api/csrf/', csrf_token_view, name='csrf_token'),
     path('csrf/' ,csrf_token_view, name='csrf_token'),
     path("libre/sync-now/", LibreSyncNowView.as_view(), name="libre_sync_now"),
+    path("insights/summary", InsightSummaryView.as_view(), name="insight_summary"),
 ]
+
