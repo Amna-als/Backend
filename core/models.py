@@ -13,12 +13,7 @@ from .openai_service import analyze_image
 from .insulin import calculate_insulin
 from .libre import login_with_password, get_libreview_connections
 
-# Core domain models following the provided class diagram
-#
-# Each model below maps to a box on the UML diagram 
-# Classes are intentionally lightweight: fields model data and helper methods are
-# small placeholders that can later be implemented to call external services
-# (e.g., image analysis, Libre auth) or to perform domain logic.
+
 
 DEFAULT_LOW_GLUC = 69
 DEFAULT_HIGH_GLUC = 200
@@ -71,17 +66,11 @@ class FoodEntry(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
     meal_type = models.CharField(max_length=16, choices=MEAL_TYPES, default="lunch")
     nutritional_info = models.OneToOneField(NutritionalInfo, on_delete=models.SET_NULL, null=True, blank=True)
-    # Recommended insulin values (calculated deterministically). These are
-    # stored for UI/display and audit; they do NOT trigger any insulin
-    # delivery. Values are optional and set when the backend computes a
-    # recommendation for a FoodEntry.
+    
     insulin_recommended = models.FloatField(blank=True, null=True)
     insulin_rounded = models.FloatField(blank=True, null=True)
 
-    # analyze_food: placeholder hook where you can call the vision + nutrition
-    # pipeline (OpenAI or other) to produce a NutritionalInfo object or dict.
-    # It intentionally does not implement the call here to keep the model layer
-    # free of network dependencies; implement in a service layer or view.
+   
     def analyze_food(self, image_file=None):
         """Placeholder for analysis (e.g., call vision API); returns NutritionalInfo-like dict or object."""
         #resolve image bytes
@@ -184,9 +173,7 @@ class GlucoseRecord(models.Model):
     trend_arrow = models.CharField(max_length=50, blank=True, null=True)
     source = models.CharField(max_length=50, choices=SOURCE_CHOICES, default="manual")  # e.g., 'cgm' or 'manual'
 
-    # Domain-level helper: quick abnormality check using thresholds.
-    # In real use you may use user-specific targets stored in the User model
-    # or Preferences and more sophisticated rolling-window checks.
+    
     def is_abnormal(self, low_threshold=None, high_threshold=None):
         low, high = user_glucose_thershold(self.user)
         if low_threshold is not None:
@@ -222,9 +209,7 @@ class LibreConnection(models.Model):
     region = models.CharField(max_length=100, blank=True, null=True)
     last_synced = models.DateTimeField(blank=True, null=True)
 
-    # authenticate: placeholder where code would reach out to LibreView/LibreLink
-    # API to exchange email/password for tokens. Implementations should store
-    # tokens (not raw passwords) and handle retry/refresh flows.
+    
     def authenticate(self):
 
         email = self.email
@@ -311,8 +296,7 @@ class LibreConnection(models.Model):
         except Exception:
             pass
 
-    # Disconnect helper - clears connection metadata locally. The real
-    # implementation should also call the remote API if required.
+    # Disconnect helper - clears connection metadata locally. 
     def disconnect(self):
         self.connected = False
         self.token = None
@@ -328,9 +312,7 @@ class GlucoseMonitor(models.Model):
     # store recent glucose values or metadata as JSON; glucose data itself is stored in GlucoseRecord
     meta = models.JSONField(blank=True, null=True)
 
-    # Monitoring helpers. These are placeholders to express the intent that a
-    # GlucoseMonitor can orchestrate polling/streaming of CGM data via a
-    # `LibreConnection` or other provider.
+   
     def start_live_monitoring(self):
         if not self.connection:
             return {"error":"no_connection"}
@@ -422,8 +404,7 @@ class Preferences(models.Model):
     color_scheme = models.CharField(max_length=50, blank=True, null=True)
     language = models.CharField(max_length=20, blank=True, null=True)
 
-    # Simple setter helper for preferred unit. In a complete product this
-    # might trigger a conversion of stored values or a user-visible message.
+    # Simple setter helper for preferred unit. 
     def set_preferred_unit(self, unit: str):
         self.preferred_glucose_unit = unit
         self.save()
@@ -439,9 +420,7 @@ class Alert(models.Model):
     message = models.TextField()
     timestamp = models.DateTimeField(auto_now_add=True)
 
-    # send: placeholder where notification logic (push, SMS, email) would be
-    # implemented. Keep the model simple and implement delivery in a service
-    # layer so you can retry and log delivery attempts.
+   
     def send(self):
         #we retrun true to indicate delivered
         return True
@@ -483,9 +462,7 @@ class InsightReport(models.Model):
     time_of_day_with_spikes = models.CharField(max_length=100, blank=True, null=True)
     general_insights = models.TextField(blank=True, null=True)
 
-    # generate_insights: intended to compute aggregated statistics over a
-    # user's GlucoseRecord/FoodEntry history. Implementation belongs in a
-    # separate service or management command; the model holds the result.
+    
     def generate_insights(self, days: int = 14):
         #14-day summary of average glucose, time in range, high/low counts, A1c%, time of day
         #in spike, most frequent meal, meal impact
@@ -609,7 +586,7 @@ class Recommendation(models.Model):
         return f"Recommendation({self.id}) for {self.user_id}"
 
 
-# Keep small convenience Images model (used earlier in project)
+
 class Images(models.Model):
     title = models.CharField(max_length=200)
 
@@ -624,4 +601,5 @@ def _glucose_record_alert(sender, instance: GlucoseRecord, created, **kwargs):
         Alert.ensure_for_glucose(instance)
     except Exception:
         pass
+
 
